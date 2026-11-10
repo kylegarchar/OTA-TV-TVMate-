@@ -475,6 +475,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 Log.w(TAG, "blob " + f, e);
             }
         }
+        try {                                              // bundled copy (redistributed with permission)
+            java.io.InputStream in = getAssets().open("hdtvmate.bin");
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] t = new byte[8192]; int r;
+            while ((r = in.read(t)) > 0) bo.write(t, 0, r);
+            in.close();
+            return bo.toByteArray();
+        } catch (IOException e) { Log.w(TAG, "no bundled firmware", e); }
         return null;
     }
 

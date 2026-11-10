@@ -8,7 +8,8 @@ rm -rf build && mkdir -p build/classes build/dex build/gen
 aapt package -f -m -J build/gen -M AndroidManifest.xml -S res -I "$JAR"
 javac --release 11 -Xlint:-options -Xlint:deprecation -classpath "$JAR" -d build/classes $(find src build/gen -name '*.java')
 java -cp $SDK/r8.jar com.android.tools.r8.D8 --release --min-api 28 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
-aapt package -f -M AndroidManifest.xml -S res -I "$JAR" -F build/unsigned.apk
+mkdir -p build/assets && cp ../firmware/hdtvmate.bin build/assets/
+aapt package -f -M AndroidManifest.xml -S res -A build/assets -I "$JAR" -F build/unsigned.apk
 (cd build/dex && zip -q ../unsigned.apk classes.dex)
 zipalign -f -p 4 build/unsigned.apk build/aligned.apk
 [ -f hdtvmate.keystore ] || keytool -genkeypair -keystore hdtvmate.keystore -storepass hdtvmate -keypass hdtvmate \
