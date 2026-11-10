@@ -20,5 +20,4 @@ hdtvmate-cli usage
   Put hdtvmate.bin next to the program, or use  -b path/to/hdtvmate.bin
 
 PRIVATE-firmware/hdtvmate.bin
-  Built from YOUR OWN capture of the vendor app. It contains the vendor's tuner firmware
-  and setup data: for your own use with your own tuner only - do not share or publish it.
+  Tuner firmware and setup data, redistributed with the manufacturer's permission.

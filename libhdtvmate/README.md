@@ -1,9 +1,8 @@
 # libhdtvmate — HDTV Mate (23e2:2b02) ATSC 1.0, user space, any OS
 
 Our own driver for the GTMEDIA/Zenview "HDTV Mate" (ITE IT9306 bridge + Sony CXD6801 demod).
-Vendor firmware and chip setup data are **not** included. Build `hdtvmate.bin` from your own
-capture with `../linux/mkblob.py` and keep it next to the program, in `$HDTVMATE_BLOB`, or in
-`/lib/firmware/`.
+Uses `../firmware/hdtvmate.bin` (bundled with permission): keep a copy next to the program, set
+`$HDTVMATE_BLOB`, or install it in `/lib/firmware/`.
 
 ## Use
     hdtvmate-cli scan                       # RF 2-36, signal, PSIP names (~1 min)
