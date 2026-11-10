@@ -1,0 +1,112 @@
+# Builds hdtvmate-cli for Windows, macOS and Linux on GitHub's machines, so no local toolchain is needed.
+# Every run keeps the programs as downloadable artifacts; pushing a tag like v0.2 also publishes a release.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LIBUSB: 1.0.28
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 p7zip-full
+      - name: Build
+        run: sh windows/build.sh
+      - name: Package
+        run: |
+          mkdir hdtvmate-windows-x64
+          cp windows/build/hdtvmate-cli.exe firmware/hdtvmate.bin hdtvmate-windows-x64/
+          cat > hdtvmate-windows-x64/README.txt <<'TXT'
+          hdtvmate-cli for 64-bit Windows
+
+          1. Plug the tuner in, run Zadig (https://zadig.akeo.ie), choose the device with USB ID 23E2 2B02
+             and install the WinUSB driver for it. This is needed once.
+          2. Open a terminal in this folder (hdtvmate.bin must stay next to the program):
+               hdtvmate-cli scan
+               hdtvmate-cli tune rf22 -o - | mpv -
+               hdtvmate-cli tune rf22 -o recording.ts -t 60
+          TXT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdtvmate-windows-x64
+          path: hdtvmate-windows-x64
+
+  macos:
+    runs-on: macos-latest
+    env:
+      # one program for Apple silicon and Intel Macs, macOS 11 or later, with libusb built in
+      ARCHS: -arch arm64 -arch x86_64 -mmacosx-version-min=11.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build libusb (static, universal)
+        run: |
+          curl -sSL -o libusb.tar.bz2 https://github.com/libusb/libusb/releases/download/v$LIBUSB/libusb-$LIBUSB.tar.bz2
+          tar xjf libusb.tar.bz2
+          cd libusb-$LIBUSB
+          ./configure --disable-shared --enable-static --prefix="$PWD/../usb" CFLAGS="-O2 $ARCHS" LDFLAGS="$ARCHS"
+          make -j4 install
+      - name: Build
+        run: |
+          mkdir hdtvmate-macos
+          cc -O2 -Wall -Wextra $ARCHS -Iusb/include/libusb-1.0 -o hdtvmate-macos/hdtvmate-cli \
+              libhdtvmate/hdtvmate-cli.c libhdtvmate/hdtvmate.c usb/lib/libusb-1.0.a \
+              -framework IOKit -framework CoreFoundation -framework Security -lobjc
+          file hdtvmate-macos/hdtvmate-cli
+          lipo -archs hdtvmate-macos/hdtvmate-cli | grep -q arm64
+          lipo -archs hdtvmate-macos/hdtvmate-cli | grep -q x86_64
+          hdtvmate-macos/hdtvmate-cli 2>&1 | grep -q usage
+      - name: Package
+        run: |
+          cp firmware/hdtvmate.bin hdtvmate-macos/
+          cat > hdtvmate-macos/README.txt <<'TXT'
+          hdtvmate-cli for macOS 11 or later (Apple silicon and Intel)
+
+          No driver is needed. In Terminal, from this folder (hdtvmate.bin must stay next to the program):
+            xattr -d com.apple.quarantine hdtvmate-cli     # once, because the program is not notarised
+            ./hdtvmate-cli scan
+            ./hdtvmate-cli tune rf22 -o - | mpv -
+            ./hdtvmate-cli tune rf22 -o recording.ts -t 60
+          TXT
+          tar czf hdtvmate-macos.tar.gz hdtvmate-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdtvmate-macos
+          path: hdtvmate-macos.tar.gz        # tar keeps the executable bit
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
+          make -C libhdtvmate
+          libhdtvmate/hdtvmate-cli 2>&1 | grep -q usage
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd hdtvmate-windows-x64 && zip -r ../hdtvmate-windows-x64.zip .)
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes \
+              hdtvmate-windows-x64.zip hdtvmate-macos/hdtvmate-macos.tar.gz

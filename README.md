@@ -31,6 +31,11 @@ own tuner instead, see [`capture/`](capture) and `linux/mkblob.py`.
     dvbv5-scan -o channels.conf linux/us-atsc-rf2-36.conf
     dvbv5-zap -c channels.conf -r "WLS-HD"           # or use Tvheadend / Kodi / VLC
 
+**Windows / macOS**: ready-built `hdtvmate-cli` programs are produced by GitHub Actions
+([`build.yml`](.github/workflows/build.yml)) — download them from the latest run under *Actions*, or
+from *Releases* once a `v*` tag is pushed. Windows needs the WinUSB driver assigned to the tuner
+once (Zadig); macOS needs no driver. Neither has been tested with a tuner yet.
+
 **CLI** (any OS with libusb):
 
     make -C libhdtvmate
