@@ -29,3 +29,4 @@ linux/modules.order
 linux/.tmp_versions/
 __pycache__/
 venv/
+!firmware/hdtvmate.bin
