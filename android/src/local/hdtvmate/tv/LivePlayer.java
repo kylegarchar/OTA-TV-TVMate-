@@ -64,7 +64,8 @@ public final class LivePlayer {
     // video wall clock when there is no audio yet
     private long vAnchorUs = -1, vAnchorNs;
     // latency stats
-    private long latSum, latN, dropped;
+    private long latSum, latN, dropped, teiCount, ccGaps, packets, lastStatNs;
+    private int vCc = -1, aCc = -1;
 
     private static final class Unit { byte[] data; long ptsUs; long arrivalNs; }
 
@@ -93,9 +94,20 @@ public final class LivePlayer {
     public void feed(byte[] b, int off, int len) {
         if (released) return;
         long now = System.nanoTime();
+        if (now - lastStatNs > 2_000_000_000L) {
+            if (lastStatNs != 0) Log.i(TAG, "stream: " + packets * 188 * 8 / 2 / 1000 + " kbit/s, missing-packet gaps " + ccGaps + ", reception errors " + teiCount);
+            packets = 0; ccGaps = 0; teiCount = 0; lastStatNs = now;
+        }
         for (int i = off; i + 188 <= off + len; i += 188) {
-            if (b[i] != 0x47 || (b[i + 1] & 0x80) != 0) continue;           // sync / transport error
+            if (b[i] != 0x47) continue;
+            if ((b[i + 1] & 0x80) != 0) { teiCount++; continue; }             // demod-flagged reception error
             int pid = (b[i + 1] & 0x1f) << 8 | (b[i + 2] & 0xff);
+            if ((pid == videoPid || pid == audioPid) && (b[i + 3] & 0x10) != 0) {
+                int cc = b[i + 3] & 0x0f, last = pid == videoPid ? vCc : aCc;
+                if (last >= 0 && cc != ((last + 1) & 0x0f) && cc != last) ccGaps++;
+                if (pid == videoPid) vCc = cc; else aCc = cc;
+            }
+            packets++;
             if (pid == 0 || pid == pmtPid) { sections.packet(b, i); continue; }
             if (pid != videoPid && pid != audioPid) continue;
             int afc = (b[i + 3] >> 4) & 3;
@@ -161,9 +173,40 @@ public final class LivePlayer {
             pumpVideo();
         } else {
             if (audio == null && (audioFailed || !startAudio(u.data))) return;
-            synchronized (aQueue) { aQueue.add(u); if (aQueue.size() > 50) aQueue.poll(); }
+            splitAc3(u);
             pumpAudio();
         }
+    }
+
+    // AC-3 frames can straddle PES packets: rebuild whole sync frames before decoding
+    private static final int[] AC3_WORDS_48K = {64,64,80,80,96,96,112,112,128,128,160,160,192,192,224,224,256,256,
+            320,320,384,384,448,448,512,512,640,640,768,768,896,896,1024,1024,1152,1152,1280,1280};
+    private byte[] ac3Buf = new byte[0];
+    private long ac3Pts = -1;          // pts of the first byte in ac3Buf (us)
+
+    private void splitAc3(Unit u) {
+        byte[] nb = new byte[ac3Buf.length + u.data.length];
+        System.arraycopy(ac3Buf, 0, nb, 0, ac3Buf.length);
+        System.arraycopy(u.data, 0, nb, ac3Buf.length, u.data.length);
+        if (ac3Buf.length == 0) ac3Pts = u.ptsUs;
+        int i = 0;
+        while (i + 6 <= nb.length) {
+            if ((nb[i] & 0xff) != 0x0b || (nb[i + 1] & 0xff) != 0x77) { i++; continue; }
+            int code = nb[i + 4] & 0x3f;
+            if (code >= AC3_WORDS_48K.length) { i++; continue; }
+            int size = AC3_WORDS_48K[code] * 2;
+            if (i + size > nb.length) break;                   // incomplete: wait for the next PES
+            Unit f = new Unit();
+            f.data = new byte[size];
+            System.arraycopy(nb, i, f.data, 0, size);
+            f.ptsUs = ac3Pts;
+            f.arrivalNs = u.arrivalNs;
+            synchronized (aQueue) { aQueue.add(f); if (aQueue.size() > 400) aQueue.poll(); }
+            ac3Pts += 32000;                                   // 1536 samples at 48 kHz
+            i += size;
+        }
+        ac3Buf = java.util.Arrays.copyOfRange(nb, i, nb.length);
+        if (ac3Buf.length == 0 || i > 0 && u.ptsUs > ac3Pts + 100000) ac3Pts = u.ptsUs;   // resync to PES pts
     }
 
     // ================= video =================
@@ -361,7 +404,7 @@ public final class LivePlayer {
                 // live edge: anything that arrived more than 0.3 s ago (plus what is already queued in the
                 // track) is stale -> drop it so playback catches up instead of staying behind forever
                 long queuedNs = (audioFramesWritten - Math.max(0, track.getPlaybackHeadPosition())) * 1000000000L / sampleRate;
-                if (arr != null && System.nanoTime() - arr + queuedNs > MAX_AUDIO_AGE_NS && anchorPtsUs >= 0) {
+                if (false) {   // catch-up disabled: it fed back into underruns
                     dropped++;
                 } else {
                     if (audioFirstUs < 0) audioFirstUs = info.presentationTimeUs;
