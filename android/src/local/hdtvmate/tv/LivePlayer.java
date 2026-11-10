@@ -6,6 +6,7 @@ import android.media.AudioTimestamp;
 import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
@@ -15,17 +16,23 @@ import android.view.Surface;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Low-latency live player: demuxes one program from 188-byte TS packets and feeds the hardware
  * decoders directly (no HTTP, no MediaPlayer buffering). Audio plays as soon as it is decoded and is
  * the master clock; video frames are shown at their PTS against it, late frames are dropped.
+ *
+ * Picture modes: Direct sends decoded frames straight to the screen's video layer (the box's own
+ * deinterlacer and picture processing apply). The other modes route them through {@link Enhancer}.
  */
 public final class LivePlayer {
     private static final String TAG = "HDTVMate";
 
     public interface Listener {
-        void onVideoSize(int w, int h);
+        /** enhanced: frames are drawn by the app at w x h (the screen surface should be that size). */
+        void onVideoSize(int w, int h, boolean enhanced);
         void onFirstFrame(long msFromStart);
         void onLatency(long msArrivalToScreen);
     }
@@ -33,6 +40,7 @@ public final class LivePlayer {
     private final Surface surface;
     private final Listener listener;
     private final int program;
+    private final int picture;                        // Enhancer.DIRECT / CLEAN / SHARP / CLEAN_SHARP
     private final long startNs = System.nanoTime();
     private volatile boolean released;
     private boolean videoFailed, audioFailed;   // don't retry codec creation on every PES
@@ -45,6 +53,15 @@ public final class LivePlayer {
 
     // decoders
     private HandlerThread vThread, aThread;
+    private Handler vh;
+    // picture enhancement (all on the video thread): frames go to the GPU one at a time, each just before it is due
+    private volatile Enhancer enh;
+    private final ArrayDeque<long[]> outQ = new ArrayDeque<>();   // {output buffer index, ptsUs} waiting to be shown
+    private boolean inFlight;                         // a frame was released to the Enhancer and is not drawn yet
+    private long inFlightPts, frameNs = 16683333L;
+    private int drawFails, srcW, srcH;
+    private boolean interlaced;
+    private float fps;
     private MediaCodec video, audio;
     private final ArrayDeque<Unit> vQueue = new ArrayDeque<>(), aQueue = new ArrayDeque<>();
     private final ArrayDeque<Integer> vFree = new ArrayDeque<>(), aFree = new ArrayDeque<>();
@@ -79,9 +96,10 @@ public final class LivePlayer {
         }
     }
 
-    public LivePlayer(Surface surface, int program, Listener l) {
+    public LivePlayer(Surface surface, int program, int picture, Listener l) {
         this.surface = surface;
         this.program = program;
+        this.picture = picture;
         this.listener = l;
         sections = new Ts.Sections(new Ts.Sections.Handler() {
             public void section(int pid, byte[] s, int len) { onSection(pid, s, len); }
@@ -218,6 +236,9 @@ public final class LivePlayer {
             if (k < 0) return false;
             w = (d[k + 4] & 0xff) << 4 | (d[k + 5] & 0xff) >> 4;
             h = (d[k + 5] & 0x0f) << 8 | (d[k + 6] & 0xff);
+            fps = FRAME_RATES[d[k + 7] & 0x0f];
+            int e = find(d, 0xb5);                      // sequence extension: progressive_sequence
+            interlaced = e >= 0 && (d[e + 4] & 0xf0) == 0x10 && (d[e + 5] & 0x08) == 0;
         } else {
             boolean sps = false;
             for (int i = 0; i + 4 < d.length && !sps; i++)
@@ -232,7 +253,12 @@ public final class LivePlayer {
             MediaCodec vc = MediaCodec.createDecoderByType(videoMime);
             vThread = new HandlerThread("hdtvmate-video", android.os.Process.THREAD_PRIORITY_DISPLAY);
             vThread.start();
-            final Handler vh = new Handler(vThread.getLooper());
+            vh = new Handler(vThread.getLooper());
+            final Handler vh = this.vh;
+            srcW = w; srcH = h;
+            float shown = interlaced ? fps * 2 : fps;   // 1080i is shown as 59.94 pictures a second
+            if (shown > 0) frameNs = (long) (1e9 / shown);
+            if (picture != Enhancer.DIRECT) startEnhancer(w, h);
             video = vc;
             video.setCallback(new MediaCodec.Callback() {
                 public void onInputBufferAvailable(MediaCodec c, int i) { synchronized (vQueue) { vFree.add(i); } pumpVideo(); }
@@ -241,21 +267,148 @@ public final class LivePlayer {
                 public void onOutputFormatChanged(MediaCodec c, MediaFormat f) {
                     int ow = f.getInteger(MediaFormat.KEY_WIDTH), oh = f.getInteger(MediaFormat.KEY_HEIGHT);
                     if (f.containsKey("crop-right")) { ow = f.getInteger("crop-right") + 1 - f.getInteger("crop-left"); oh = f.getInteger("crop-bottom") + 1 - f.getInteger("crop-top"); }
-                    listener.onVideoSize(ow, oh);
+                    srcW = ow; srcH = oh;
+                    Enhancer en = enh;
+                    if (en != null) en.setSource(ow, oh, interlaced);
+                    listener.onVideoSize(ow, oh, en != null);
                 }
             }, vh);
-            video.configure(f, surface, null, 0);
+            Enhancer en = enh;
+            video.configure(f, en != null ? en.input() : surface, null, 0);
             video.start();
-            listener.onVideoSize(w, h);
-            Log.i(TAG, "video decoder " + video.getName() + " " + w + "x" + h);
+            listener.onVideoSize(w, h, en != null);
+            Log.i(TAG, "video decoder " + video.getName() + " " + w + "x" + h + (interlaced ? "i " : "p ") + fps + " fps, picture "
+                    + Enhancer.NAMES[en != null ? picture : Enhancer.DIRECT]);
+            hintDisplay(shown);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "start video", e);
             videoFailed = true;
             if (video != null) { video.release(); video = null; }
+            Enhancer en = enh;
+            enh = null;
+            if (en != null) closeEnhancer(en);
             if (vThread != null) { vThread.quitSafely(); vThread = null; }
             return false;
         }
+    }
+
+    private static final float[] FRAME_RATES = {0, 24000 / 1001f, 24, 25, 30000 / 1001f, 30, 50, 60000 / 1001f, 60, 0, 0, 0, 0, 0, 0, 0};
+
+    /**
+     * Free quality in every mode: ask the display for the broadcast's exact rate (59.94 Hz, not 60) so there
+     * is no repeated frame every ~17 s. Honoured when "Match content frame rate" is on in the box's settings.
+     * Also logs the decoder's vendor parameters, which is where any chip-specific picture controls would show up.
+     */
+    private void hintDisplay(float shown) {
+        try {
+            if (Build.VERSION.SDK_INT >= 30 && shown > 0) surface.setFrameRate(shown, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+            if (Build.VERSION.SDK_INT >= 31) Log.i(TAG, "decoder vendor parameters: " + video.getSupportedVendorParameters());
+        } catch (Exception e) { Log.w(TAG, "display hint", e); }
+    }
+
+    // ================= picture enhancement =================
+
+    private void startEnhancer(final int w, final int h) {
+        final Enhancer en;
+        try { en = new Enhancer(surface, picture, w, h, interlaced); }
+        catch (Exception e) { Log.e(TAG, "picture: unavailable, using Direct", e); return; }
+        enh = en;
+        en.texture().setOnFrameAvailableListener(new android.graphics.SurfaceTexture.OnFrameAvailableListener() {
+            public void onFrameAvailable(android.graphics.SurfaceTexture t) { onFrame(); }
+        }, vh);
+        vh.post(new Runnable() { public void run() {
+            try { en.init(); }
+            catch (Exception e) { Log.e(TAG, "picture: GPU setup failed", e); fallBackToDirect(); }
+        } });
+    }
+
+    /** Video thread. Give the screen back to the decoder; playback carries on in Direct mode. */
+    private void fallBackToDirect() {
+        Enhancer en = enh;
+        if (en == null) return;
+        enh = null;
+        en.releaseGl();
+        vh.removeCallbacks(pumpOutR);
+        vh.removeCallbacks(stuckR);
+        try {
+            MediaCodec c = video;
+            if (c != null && !released) {
+                c.setOutputSurface(surface);
+                for (long[] f : outQ) c.releaseOutputBuffer((int) f[0], false);
+            }
+        } catch (Exception e) { if (!released) Log.w(TAG, "picture: back to Direct", e); }
+        outQ.clear();
+        inFlight = false;
+        en.release();
+        Log.w(TAG, "picture: using Direct");
+        if (!released) listener.onVideoSize(srcW, srcH, false);
+    }
+
+    private final Runnable pumpOutR = new Runnable() { public void run() { pumpOut(); } };
+    private final Runnable stuckR = new Runnable() { public void run() { inFlight = false; pumpOut(); } };
+
+    /**
+     * Video thread. A SurfaceTexture keeps only the newest frame, so frames are handed over one at a time:
+     * the next one is released ~25 ms before it is due and only after the previous one has been drawn.
+     * Frames that are not due yet wait in the decoder's output buffers, as they do in Direct mode.
+     */
+    private void pumpOut() {
+        vh.removeCallbacks(pumpOutR);
+        MediaCodec c = video;
+        while (!released && c != null && enh != null && !inFlight && !outQ.isEmpty()) {
+            long[] f = outQ.peek();
+            long now = System.nanoTime(), clock = clockUs(now);
+            if (clock == Long.MIN_VALUE) { vAnchorUs = f[1]; vAnchorNs = now; clock = f[1]; }
+            long delta = f[1] - clock;
+            if (delta > 3000000) { vAnchorUs = f[1]; vAnchorNs = now; delta = 0; }      // discontinuity
+            if (delta > 30000) { vh.postDelayed(pumpOutR, (delta - 25000) / 1000); return; }
+            outQ.poll();
+            try {
+                if (delta < -80000) { c.releaseOutputBuffer((int) f[0], false); continue; }   // late: drop
+                inFlight = true;
+                inFlightPts = f[1];
+                c.releaseOutputBuffer((int) f[0], true);
+                vh.removeCallbacks(stuckR);
+                vh.postDelayed(stuckR, 150);            // never wait forever for a frame the decoder swallowed
+            } catch (Exception e) {
+                inFlight = false;
+                if (!released) Log.w(TAG, "video out", e);
+            }
+        }
+    }
+
+    /** Video thread: the released frame reached the SurfaceTexture. Filter it and queue it for its display time. */
+    private void onFrame() {
+        Enhancer en = enh;
+        if (released || en == null) return;
+        vh.removeCallbacks(stuckR);
+        long now = System.nanoTime(), clock = clockUs(now);
+        long delta = clock == Long.MIN_VALUE ? 0 : Math.max(0, Math.min(500000, inFlightPts - clock));
+        try {
+            en.draw(now + delta * 1000, frameNs);
+            drawFails = 0;
+            note(inFlightPts);
+        } catch (Exception e) {
+            if (released) return;
+            Log.w(TAG, "picture: draw", e);
+            if (++drawFails >= 5) { fallBackToDirect(); return; }
+        }
+        inFlight = false;
+        pumpOut();
+    }
+
+    /** Any thread: tear the GL side down on the video thread and wait for it, so the screen surface is free again. */
+    private void closeEnhancer(final Enhancer en) {
+        Handler h = vh;
+        HandlerThread t = vThread;
+        if (h != null && t != null && t.isAlive() && Thread.currentThread() != t) {
+            final CountDownLatch done = new CountDownLatch(1);
+            if (h.post(new Runnable() { public void run() { en.releaseGl(); done.countDown(); } }))
+                try { done.await(700, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) { }
+        } else
+            en.releaseGl();
+        en.release();
     }
 
     private void pumpVideo() {
@@ -290,6 +443,7 @@ public final class LivePlayer {
 
     private void renderVideo(final MediaCodec c, final int i, final MediaCodec.BufferInfo info, Handler h) {
         if (released) return;
+        if (enh != null) { outQ.add(new long[]{i, info.presentationTimeUs}); pumpOut(); return; }
         long now = System.nanoTime(), clock = clockUs(now);
         if (clock == Long.MIN_VALUE) { vAnchorUs = info.presentationTimeUs; vAnchorNs = now; clock = info.presentationTimeUs; }
         long delta = info.presentationTimeUs - clock;
@@ -439,6 +593,9 @@ public final class LivePlayer {
     public void release() {
         released = true;
         try { if (video != null) { video.stop(); video.release(); } } catch (Exception ignored) { }
+        Enhancer en = enh;
+        enh = null;
+        if (en != null) closeEnhancer(en);
         try { if (audio != null) { audio.stop(); audio.release(); } } catch (Exception ignored) { }
         try { if (track != null) { track.pause(); track.flush(); track.release(); } } catch (Exception ignored) { }
         if (vThread != null) vThread.quitSafely();

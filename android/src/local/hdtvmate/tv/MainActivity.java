@@ -82,6 +82,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private final List<Ts.Channel> channels = new ArrayList<>();     // what the list and CH +/- show
     private boolean hdOnly;
     private int current = -1, playToken;
+    private int picture;                              // Enhancer.DIRECT / CLEAN / SHARP / CLEAN_SHARP
+    private boolean enhancedNow;                      // the playing channel is being drawn by the Enhancer
     private volatile boolean scanning, active;
     private volatile Socket devSocket;
 
@@ -115,6 +117,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(buildStatus(), new FrameLayout.LayoutParams(dp(600), -2, Gravity.CENTER));
         setContentView(root);
         loadChannels();
+        picture = Math.max(0, Math.min(Enhancer.NAMES.length - 1, getPrefs().getInt("picture", Enhancer.DIRECT)));
     }
 
     private int dp(float v) { return Ui.dp(this, v); }
@@ -266,7 +269,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private String subFor(Ts.Channel c) {
-        return "Channel " + c.major + "." + c.minor + "  ·  RF " + c.rf + (videoLabel.isEmpty() ? "" : "  ·  " + videoLabel);
+        return "Channel " + c.major + "." + c.minor + "  ·  RF " + c.rf + (videoLabel.isEmpty() ? "" : "  ·  " + videoLabel)
+                + (enhancedNow ? "  ·  " + Enhancer.NAMES[picture] : "");
     }
 
     private void buildRows() {
@@ -283,9 +287,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
             Ts.Channel c = channels.get(i);
-            rowViews.add(addRow(c.major + "." + c.minor, c.name, "RF " + c.rf, i == current, i < channels.size() - 1,
+            rowViews.add(addRow(c.major + "." + c.minor, c.name, "RF " + c.rf, i == current, true,
                     new View.OnClickListener() { public void onClick(View v) { closePanel(); play(idx); } }));
         }
+        rowViews.add(addRow("Pic", "Picture", Enhancer.NAMES[picture], false, true,
+                new View.OnClickListener() { public void onClick(View v) { nextPicture(); } }));
         rowViews.add(addRow("↻", "Scan for Channels", null, false, false,
                 new View.OnClickListener() { public void onClick(View v) { closePanel(); startScan(); } }));
         panelCount.setText(channels.isEmpty() ? "No channels yet" : channels.size() + " channels");
@@ -332,6 +338,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
         rows.addView(outer, new LinearLayout.LayoutParams(-1, -2));
         return row;
+    }
+
+    /** Picture row: step to the next mode and restart the channel with it; the list stays open to keep stepping. */
+    private void nextPicture() {
+        picture = (picture + 1) % Enhancer.NAMES.length;
+        getPrefs().edit().putInt("picture", picture).apply();
+        buildRows();
+        final View row = rowViews.get(channels.size());
+        ui.post(new Runnable() { public void run() { row.requestFocus(); } });
+        if (current >= 0 && current < channels.size() && tuner != null) play(current);
     }
 
     private void openPanel() {
@@ -638,13 +654,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private LivePlayer.Listener listenerFor(final Ts.Channel c, final int token, final int strength) {
         return new LivePlayer.Listener() {
-            public void onVideoSize(final int w, final int h) {
+            public void onVideoSize(final int w, final int h, final boolean enhanced) {
                 ui.post(new Runnable() { public void run() {
                     if (token != playToken) return;
                     fitVideo(w, h);
                     if (h > 0 && c.height != h && c.rf > 0) { c.height = h; persistChannels(); }
+                    // enhanced: the app draws at source resolution and the compositor scales it to the screen
+                    if (enhanced && w > 0 && h > 0) surface.getHolder().setFixedSize(w, h);
+                    else surface.getHolder().setSizeFromLayout();
+                    boolean changed = enhanced != enhancedNow;
+                    enhancedNow = enhanced;
                     String label = h >= 1000 ? "1080i" : h >= 700 ? "720p" : h > 0 ? "SD" : "";
-                    if (!label.equals(videoLabel)) {
+                    if (!label.equals(videoLabel) || changed) {
                         videoLabel = label;
                         if (mini.getVisibility() == View.VISIBLE) nowPlaying(c, subFor(c), strength, null, true);
                     }
@@ -663,6 +684,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final int token = ++playToken;
         stopPlayer();
         videoLabel = "";
+        enhancedNow = false;
         status(null, null, false, -1);
         nowPlaying(c, "Channel " + c.major + "." + c.minor + "  ·  Tuning…", -1, null, false);
         worker.execute(new Runnable() { public void run() {
@@ -674,7 +696,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 nowPlaying(c, subFor(c), st.strength, lk ? null : "No Signal", lk);
                 if (!lk) return;
                 waitSurface();
-                final LivePlayer p = new LivePlayer(surface.getHolder().getSurface(), c.program, listenerFor(c, token, st.strength));
+                final LivePlayer p = new LivePlayer(surface.getHolder().getSurface(), c.program, picture, listenerFor(c, token, st.strength));
                 player = p;
                 tuner.startStream(new Tuner.TsSink() {
                     public void packets(byte[] b, int off, int len) { p.feed(b, off, len); }
@@ -699,7 +721,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 Socket s = new Socket(hp[0], Integer.parseInt(hp[1]));
                 s.setTcpNoDelay(true);
                 devSocket = s;
-                LivePlayer p = new LivePlayer(surface.getHolder().getSurface(), program, listenerFor(c, token, 100));
+                LivePlayer p = new LivePlayer(surface.getHolder().getSurface(), program, picture, listenerFor(c, token, 100));
                 player = p;
                 InputStream in = s.getInputStream();
                 byte[] buf = new byte[188 * 512];
