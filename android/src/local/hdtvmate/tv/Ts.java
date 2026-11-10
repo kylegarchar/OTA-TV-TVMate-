@@ -14,6 +14,7 @@ public final class Ts {
     /** A virtual channel found by the scan. */
     public static final class Channel {
         public int rf, khz, major, minor, program;
+        public int height;           // video lines (0 = unknown); >= 720 is HD
         public String name;
         public String label() { return major + "." + minor + "  " + name; }
         public String key() { return rf + ":" + program; }

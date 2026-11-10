@@ -78,7 +78,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private TextView statusTitle, statusSub;
     private Ui.ProgressLine statusProgress;
 
-    private final List<Ts.Channel> channels = new ArrayList<>();
+    private final List<Ts.Channel> allChannels = new ArrayList<>();
+    private final List<Ts.Channel> channels = new ArrayList<>();     // what the list and CH +/- show
+    private boolean hdOnly;
     private int current = -1, playToken;
     private volatile boolean scanning, active;
     private volatile Socket devSocket;
@@ -270,6 +272,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private void buildRows() {
         rows.removeAllViews();
         rowViews.clear();
+        final View toggle = addRow(hdOnly ? "HD" : "All", "HD Channels Only", hdOnly ? "On" : "Off", hdOnly, true,
+                new View.OnClickListener() { public void onClick(View v) {
+                    hdOnly = !hdOnly;
+                    getPrefs().edit().putBoolean("hdOnly", hdOnly).apply();
+                    applyFilter();
+                    buildRows();
+                    ui.post(new Runnable() { public void run() { ((android.view.ViewGroup) rows.getChildAt(0)).getChildAt(0).requestFocus(); } });
+                } });
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
             Ts.Channel c = channels.get(i);
@@ -296,7 +306,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0, -2, 1);
         np.setMargins(dp(16), 0, dp(12), 0);
         row.addView(t, np);
-        if (playing) {
+        if (playing && right != null && right.startsWith("RF")) {
             Ui.Equalizer eq = new Ui.Equalizer(this, Ui.ACCENT);
             LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(dp(15), dp(13));
             ep.setMargins(0, 0, dp(12), 0);
@@ -430,7 +440,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     }
                     tuner = new Tuner(usb, dev, new Tuner.Blob(blob));
                 }
-                if (channels.isEmpty()) scanNow();
+                if (allChannels.isEmpty() || !getPrefs().getBoolean("resScan", false)) scanNow();   // one rescan to learn resolutions
                 else {
                     int last = getPrefs().getInt("last", 0);
                     final int idx = last < channels.size() ? last : 0;
@@ -491,7 +501,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private SharedPreferences getPrefs() { return getSharedPreferences("tv", MODE_PRIVATE); }
 
     private void loadChannels() {
-        channels.clear();
+        allChannels.clear();
+        hdOnly = getPrefs().getBoolean("hdOnly", true);
         try {
             JSONArray a = new JSONArray(getPrefs().getString("channels", "[]"));
             for (int i = 0; i < a.length(); i++) {
@@ -499,9 +510,25 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 Ts.Channel c = new Ts.Channel();
                 c.rf = o.getInt("rf"); c.khz = o.getInt("khz"); c.major = o.getInt("major");
                 c.minor = o.getInt("minor"); c.program = o.getInt("program"); c.name = o.getString("name");
-                channels.add(c);
+                c.height = o.optInt("height", 0);
+                allChannels.add(c);
             }
-        } catch (Exception e) { channels.clear(); }
+        } catch (Exception e) { allChannels.clear(); }
+        applyFilter();
+    }
+
+    /** HD only: hide channels known to be SD (unknown resolution stays visible until first watched or rescanned). */
+    private void applyFilter() {
+        Ts.Channel cur = current >= 0 && current < channels.size() ? channels.get(current) : null;
+        channels.clear();
+        for (Ts.Channel c : allChannels) if (!hdOnly || c.height == 0 || c.height >= 720) channels.add(c);
+        current = cur == null ? -1 : channels.indexOf(cur);
+    }
+
+    private void persistChannels() {
+        int last = getPrefs().getInt("last", 0);
+        saveChannels(allChannels);
+        getPrefs().edit().putInt("last", last).apply();
     }
 
     private void saveChannels(List<Ts.Channel> list) {
@@ -510,7 +537,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             for (Ts.Channel c : list) {
                 JSONObject o = new JSONObject();
                 o.put("rf", c.rf); o.put("khz", c.khz); o.put("major", c.major);
-                o.put("minor", c.minor); o.put("program", c.program); o.put("name", c.name);
+                o.put("minor", c.minor); o.put("program", c.program); o.put("name", c.name); o.put("height", c.height);
                 a.put(o);
             }
         } catch (Exception ignored) { }
@@ -537,23 +564,57 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                         : found.size() + " channel" + (found.size() == 1 ? "" : "s") + " found", false, (rf - 2) / 34f);
                 if (!tuner.tune(khz)) continue;
                 final List<Ts.Channel> here = new ArrayList<>();
+                final java.util.Map<Integer, Integer> pmtProg = new java.util.HashMap<>(), vidProg = new java.util.HashMap<>(),
+                        progHeight = new java.util.HashMap<>();
+                final Ts.Sections[] secRef = new Ts.Sections[1];
                 final Ts.Sections sec = new Ts.Sections(new Ts.Sections.Handler() {
                     public void section(int pid, byte[] s, int len) {
-                        if (here.isEmpty()) here.addAll(Ts.parseTvct(s, len, rfNo, khz));
+                        if (pid == 0x1ffb) { if (here.isEmpty()) here.addAll(Ts.parseTvct(s, len, rfNo, khz)); }
+                        else if (pid == 0) {
+                            for (java.util.Map.Entry<Integer, Integer> e : Ts.parsePat(s, len).entrySet())
+                                if (!pmtProg.containsKey(e.getValue())) { pmtProg.put(e.getValue(), e.getKey()); secRef[0].watch(e.getValue()); }
+                        } else if (pmtProg.containsKey(pid) && (s[0] & 0xff) == 2) {
+                            int i = 12 + ((s[10] & 0x0f) << 8 | (s[11] & 0xff));
+                            while (i + 5 <= len - 4) {
+                                int type = s[i] & 0xff, ep = (s[i + 1] & 0x1f) << 8 | (s[i + 2] & 0xff);
+                                if (type == 0x02 || type == 0x1b) vidProg.put(ep, pmtProg.get(pid));
+                                i += 5 + ((s[i + 3] & 0x0f) << 8 | (s[i + 4] & 0xff));
+                            }
+                        }
                     }
                 });
+                secRef[0] = sec;
                 sec.watch(0x1ffb);
+                sec.watch(0);
                 tuner.startStream(new Tuner.TsSink() {
                     public void packets(byte[] b, int off, int len) {
-                        synchronized (here) { for (int i = off; i + 188 <= off + len; i += 188) sec.packet(b, i); }
+                        synchronized (here) {
+                            for (int i = off; i + 188 <= off + len; i += 188) {
+                                int pid = (b[i + 1] & 0x1f) << 8 | (b[i + 2] & 0xff);
+                                if (sec.watching(pid)) { sec.packet(b, i); continue; }
+                                Integer prog = vidProg.get(pid);
+                                if (prog == null || progHeight.containsKey(prog)) continue;
+                                for (int k = i + 4; k + 8 < i + 188; k++)        // MPEG-2 sequence header -> height
+                                    if (b[k] == 0 && b[k + 1] == 0 && b[k + 2] == 1 && (b[k + 3] & 0xff) == 0xb3) {
+                                        progHeight.put(prog, (b[k + 5] & 0x0f) << 8 | (b[k + 6] & 0xff)); break;
+                                    }
+                            }
+                        }
                     }
                 });
-                for (long end = System.currentTimeMillis() + 3000; System.currentTimeMillis() < end; ) {
-                    synchronized (here) { if (!here.isEmpty()) break; }
+                for (long end = System.currentTimeMillis() + 3500; System.currentTimeMillis() < end; ) {
+                    synchronized (here) {
+                        boolean all = !here.isEmpty();
+                        for (Ts.Channel c : here) if (!progHeight.containsKey(c.program)) all = false;
+                        if (all) break;
+                    }
                     Tuner.sleep(100);
                 }
                 tuner.stopStream();
-                synchronized (here) { found.addAll(here); }
+                synchronized (here) {
+                    for (Ts.Channel c : here) { Integer h = progHeight.get(c.program); if (h != null) c.height = h; }
+                    found.addAll(here);
+                }
             }
         } finally {
             scanning = false;
@@ -563,6 +624,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             public int compare(Ts.Channel a, Ts.Channel b) { return a.major != b.major ? a.major - b.major : a.minor - b.minor; }
         });
         saveChannels(found);
+        getPrefs().edit().putBoolean("resScan", true).apply();
+        for (Ts.Channel c : found) Log.i(TAG, "scan: " + c.major + "." + c.minor + " " + c.name + " RF" + c.rf + " prog " + c.program + " h=" + c.height);
         ui.post(new Runnable() { public void run() {
             loadChannels();
             if (channels.isEmpty())
@@ -579,6 +642,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 ui.post(new Runnable() { public void run() {
                     if (token != playToken) return;
                     fitVideo(w, h);
+                    if (h > 0 && c.height != h && c.rf > 0) { c.height = h; persistChannels(); }
                     String label = h >= 1000 ? "1080i" : h >= 700 ? "720p" : h > 0 ? "SD" : "";
                     if (!label.equals(videoLabel)) {
                         videoLabel = label;
