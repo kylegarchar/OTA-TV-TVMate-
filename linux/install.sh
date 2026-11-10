@@ -2,7 +2,7 @@
 # Install the HDTV Mate kernel driver (DKMS) and its data file. Run: sudo sh install.sh [path/to/hdtvmate.bin]
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-BLOB=${1:-$HERE/../private/hdtvmate.bin}
+BLOB=${1:-$HERE/../firmware/hdtvmate.bin}
 VER=0.1
 [ -f "$BLOB" ] || { echo "need hdtvmate.bin (build with mkblob.py from your own capture)"; exit 1; }
 command -v dkms >/dev/null || apt-get install -y dkms
