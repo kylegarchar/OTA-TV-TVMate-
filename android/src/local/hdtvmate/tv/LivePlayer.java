@@ -59,7 +59,7 @@ public final class LivePlayer {
     private final Map<Long, Long> aArrival = new java.util.LinkedHashMap<Long, Long>() {
         protected boolean removeEldestEntry(Map.Entry<Long, Long> e) { return size() > 200; }
     };
-    private static final long MAX_AUDIO_AGE_NS = 300_000_000L;   // keep audio within 0.3 s of arrival (live edge)
+    private static final long MAX_AUDIO_AGE_NS = 1_000_000_000L; // only catch up when really behind (>1 s); dropping more often starves the track
     private final AudioTimestamp ts = new AudioTimestamp();
     // video wall clock when there is no audio yet
     private long vAnchorUs = -1, vAnchorNs;
@@ -342,8 +342,7 @@ public final class LivePlayer {
                         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
                 .setAudioFormat(new AudioFormat.Builder().setSampleRate(sampleRate).setChannelMask(mask)
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                .setBufferSizeInBytes(min * 2)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .setBufferSizeInBytes(Math.max(min * 2, sampleRate * 2 * channels * 250 / 1000))
                 .setTransferMode(AudioTrack.MODE_STREAM).build();
         audioFirstUs = -1;
         audioFramesWritten = 0;
