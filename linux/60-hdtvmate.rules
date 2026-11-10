@@ -1,0 +1,2 @@
+# HDTV Mate (23e2:2b02): let the logged-in user and the plugdev group use it via libusb.
+SUBSYSTEM=="usb", ATTR{idVendor}=="23e2", ATTR{idProduct}=="2b02", MODE="0664", GROUP="plugdev", TAG+="uaccess"

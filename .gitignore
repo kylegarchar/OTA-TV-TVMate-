@@ -1,0 +1,31 @@
+# Vendor firmware / capture-derived data: personal use only, never commit
+private
+*.bin
+it9300-fw*
+*-template.txt
+*-core.txt
+capture*.log
+*.apk
+*.idsig
+*.keystore
+*.jks
+# recordings / outputs
+*.ts
+*.raw
+*.pcap
+# build outputs
+android/build/
+libhdtvmate/*.o
+libhdtvmate/*.a
+libhdtvmate/hdtvmate-cli
+windows/build/
+windows/libusb/
+linux/*.ko
+linux/*.o
+linux/*.mod*
+linux/.*.cmd
+linux/Module.symvers
+linux/modules.order
+linux/.tmp_versions/
+__pycache__/
+venv/
