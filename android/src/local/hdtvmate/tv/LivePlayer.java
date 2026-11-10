@@ -316,7 +316,8 @@ public final class LivePlayer {
             latSum += (System.nanoTime() - arr) / 1000000; latN++;
             if (latN == 60) {
                 listener.onLatency(latSum / latN);
-                if (dropped > 0) Log.i(TAG, "audio: dropped " + dropped + " stale buffers to stay live");
+                if (ageN > 0) Log.i(TAG, "audio age " + ageSumNs / ageN / 1000000 + " ms" + (fast ? " (catching up)" : ""));
+                ageSumNs = 0; ageN = 0;
                 latSum = 0; latN = 0; dropped = 0;
             }
         }
@@ -376,6 +377,20 @@ public final class LivePlayer {
         }
     }
 
+    /** Drift control: play 2 % faster (same pitch) while audio is too far behind live; no dropped audio. */
+    private boolean fast;
+    private long ageSumNs, ageN;
+    private void catchUp(long ageNs) {
+        ageSumNs += ageNs; ageN++;
+        boolean want = fast ? ageNs > 400_000_000L : ageNs > 550_000_000L;
+        if (want == fast || track == null) return;
+        try {
+            track.setPlaybackParams(new android.media.PlaybackParams().setSpeed(want ? 1.02f : 1.0f).setPitch(1.0f));
+            fast = want;
+            Log.i(TAG, "audio " + (want ? "catching up (1.02x)" : "back to 1.0x") + ", age " + ageNs / 1000000 + " ms");
+        } catch (Exception e) { Log.w(TAG, "playback speed", e); }
+    }
+
     private void makeTrack() {
         if (track != null) { track.release(); track = null; }
         int mask = channels >= 6 ? AudioFormat.CHANNEL_OUT_5POINT1 : channels == 1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
@@ -404,9 +419,8 @@ public final class LivePlayer {
                 // live edge: anything that arrived more than 0.3 s ago (plus what is already queued in the
                 // track) is stale -> drop it so playback catches up instead of staying behind forever
                 long queuedNs = (audioFramesWritten - Math.max(0, track.getPlaybackHeadPosition())) * 1000000000L / sampleRate;
-                if (false) {   // catch-up disabled: it fed back into underruns
-                    dropped++;
-                } else {
+                if (arr != null) catchUp(System.nanoTime() - arr + queuedNs);
+                {
                     if (audioFirstUs < 0) audioFirstUs = info.presentationTimeUs;
                     anchorPtsUs = info.presentationTimeUs;
                     anchorFrame = audioFramesWritten;
