@@ -17,23 +17,17 @@ ATSC 1.0 (8VSB) is fully supported: VHF + UHF (RF 2–36), lock/signal, PSIP cha
 
 Protocol notes: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
-## Firmware and chip setup data are not included
+## Firmware
 
-The bridge firmware and the chip setup sequences belong to the tuner's vendor and are **not in
-this repository**. Each owner captures them from their own tuner and the vendor's own app
-(see [`capture/`](capture)); `linux/mkblob.py` then packs them into `hdtvmate.bin`, which every
-driver here loads at run time. Keep that file for your own use — don't publish it.
-
-Local layout (git-ignored): `private/` holds `it9300-fw-replay.txt`, `init-core.txt`,
-`tune-core.txt` (and `hdtvmate.bin` once built).
-
-    python3 linux/mkblob.py private private/hdtvmate.bin
+`firmware/hdtvmate.bin` holds the bridge firmware and chip setup sequences, redistributed with the
+manufacturer's written permission. Every driver here loads it at run time. To rebuild it from your
+own tuner instead, see [`capture/`](capture) and `linux/mkblob.py`.
 
 ## Quick start
 
 **Linux kernel driver** (Raspberry Pi OS / Debian):
 
-    sudo sh linux/install.sh private/hdtvmate.bin   # DKMS build + firmware + udev rule
+    sudo sh linux/install.sh                        # DKMS build + firmware + udev rule
     dvbv5-scan -o channels.conf linux/us-atsc-rf2-36.conf
     dvbv5-zap -c channels.conf -r "WLS-HD"           # or use Tvheadend / Kodi / VLC
 
@@ -44,7 +38,7 @@ Local layout (git-ignored): `private/` holds `it9300-fw-replay.txt`, `init-core.
     libhdtvmate/hdtvmate-cli tune rf22 -o - | mpv -
 
 **OTA TV app** (Android TV): build with `android/build.sh` (no Gradle; needs `android.jar` and
-`r8.jar` in `$ANDROID_SDK_DIR`), install, plug the tuner in, pick OTA TV. Put `hdtvmate.bin` in
+`r8.jar` in `$ANDROID_SDK_DIR`), install, plug the tuner in, pick OTA TV. Put `firmware/hdtvmate.bin` in
 `PRIVATE-firmware/` on a card in the tuner's built-in card reader (or in the app's files folder);
 the app copies it on first run.
 
