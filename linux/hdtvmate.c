@@ -13,7 +13,12 @@
 #include <linux/firmware.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 #include <linux/unaligned.h>
+#else
+#include <asm/unaligned.h>
+#endif
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <media/dvbdev.h>
@@ -102,7 +107,7 @@ static int bridge_cmd_locked(struct hdtvmate *d, u16 code, const u8 *pl, int ple
 			     u8 *rbuf, int rlen)
 {
 	u8 *b = d->cmdbuf;
-	int n = plen + 6, act, ret;
+	int n = plen + 6, act, ret, i;
 	u16 c;
 
 	if (d->disconnected)
@@ -123,9 +128,14 @@ static int bridge_cmd_locked(struct hdtvmate *d, u16 code, const u8 *pl, int ple
 	ret = usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, EP_CMD_OUT), b, n, &act, 3000);
 	if (ret)
 		return ret;
-	ret = usb_bulk_msg(d->udev, usb_rcvbulkpipe(d->udev, EP_CMD_IN), b, 512, &act, 3000);
-	if (ret)
-		return ret;
+	/* drop stale replies to earlier (timed-out) commands until ours arrives */
+	for (i = 0; i < 4; i++) {
+		ret = usb_bulk_msg(d->udev, usb_rcvbulkpipe(d->udev, EP_CMD_IN), b, 512, &act, 3000);
+		if (ret)
+			return ret;
+		if (act >= 5 && b[1] == d->seq)
+			break;
+	}
 	if (act < 5 || b[1] != d->seq)
 		return -EIO;
 	c = csum16(b + 1, act - 3);
@@ -548,7 +558,6 @@ static void urb_complete(struct urb *urb)
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
-	case -EPROTO:
 		return;
 	default:
 		dev_dbg(&d->intf->dev, "urb status %d\n", urb->status);
@@ -594,8 +603,14 @@ static int start_feed(struct dvb_demux_feed *feed)
 {
 	struct hdtvmate *d = feed->demux->priv;
 
-	if (d->feeds++ == 0)
-		return stream_start(d);
+	int ret;
+
+	if (d->feeds++ == 0) {
+		ret = stream_start(d);
+		if (ret)
+			d->feeds--;
+		return ret;
+	}
 	return 0;
 }
 

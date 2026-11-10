@@ -32,7 +32,10 @@ class IT930x:
         frame = bytes([len(payload) + 5, code >> 8 & 0xFF, code & 0xFF, self.seq]) + payload
         frame += struct.pack(">H", _csum(frame[1:]))
         self.dev.write(0x02, frame, timeout)
-        r = bytes(self.dev.read(0x81, 256, timeout))
+        for _ in range(4):                          # skip stale replies to earlier commands
+            r = bytes(self.dev.read(0x81, 256, timeout))
+            if len(r) >= 5 and r[1] == self.seq:
+                break
         if len(r) < 5 or r[1] != self.seq or _csum(r[1:-2]) != struct.unpack(">H", r[-2:])[0]:
             raise BridgeError(f"bad reply to cmd {code:#x}: {r.hex()}")
         if r[2]:

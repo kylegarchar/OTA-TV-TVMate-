@@ -95,7 +95,11 @@ public final class Tuner {
         int c = csum16(b, 1, plen + 3);
         b[plen + 4] = (byte) (c >> 8); b[plen + 5] = (byte) c;
         if (conn.bulkTransfer(epOut, b, plen + 6, 3000) != plen + 6) throw new IOException("USB write failed");
-        int n = conn.bulkTransfer(epIn, b, b.length, 3000);
+        int n = -1;
+        for (int i = 0; i < 4; i++) {                 // skip stale replies to earlier commands
+            n = conn.bulkTransfer(epIn, b, b.length, 3000);
+            if (n < 0 || (n >= 5 && (b[1] & 0xff) == seq)) break;
+        }
         if (n < 5 || (b[1] & 0xff) != seq || csum16(b, 1, n - 3) != ((b[n - 2] & 0xff) << 8 | (b[n - 1] & 0xff)))
             throw new IOException("bad reply from tuner");
         if (b[2] != 0) return b[2] & 0xff;

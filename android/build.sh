@@ -7,7 +7,7 @@ JAR=$SDK/android-34/android.jar
 rm -rf build && mkdir -p build/classes build/dex build/gen
 aapt package -f -m -J build/gen -M AndroidManifest.xml -S res -I "$JAR"
 javac --release 11 -Xlint:-options -Xlint:deprecation -classpath "$JAR" -d build/classes $(find src build/gen -name '*.java')
-java -cp $SDK/r8.jar com.android.tools.r8.D8 --release --min-api 26 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
+java -cp $SDK/r8.jar com.android.tools.r8.D8 --release --min-api 28 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
 aapt package -f -M AndroidManifest.xml -S res -I "$JAR" -F build/unsigned.apk
 (cd build/dex && zip -q ../unsigned.apk classes.dex)
 zipalign -f -p 4 build/unsigned.apk build/aligned.apk

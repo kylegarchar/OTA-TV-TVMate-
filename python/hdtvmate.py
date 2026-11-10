@@ -34,7 +34,8 @@ class HDTVMate:
         elif not self.demod_alive():
             self.init_chips()                 # bridge kept firmware but the demod was reset
         self.tune_seq = self._seq("tune-core.txt")
-        self.tune3_seq = self._seq("atsc3-core.txt")
+        a3 = os.path.join(DATA, "atsc3-core.txt")
+        self.tune3_seq = self._seq("atsc3-core.txt") if os.path.exists(a3) else None  # optional, experimental
         self.mode = None
         self._buf = b""
 

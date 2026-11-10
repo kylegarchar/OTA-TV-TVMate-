@@ -363,13 +363,17 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         registerReceiver(usbReceiver, f);
         String dev = getIntent().getStringExtra("devlive");     // developer only: live TS over the LAN
         if (dev != null) { devLive(dev, getIntent().getIntExtra("program", 1)); return; }
-        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                && !askedStorage) {
+            askedStorage = true;                          // ask once; without it the app still works from app storage
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, 1);
-        else
+        } else
             connect();
     }
 
-    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { if (active) connect(); }
+    private boolean askedStorage;
+
+    @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) { ui.post(new Runnable() { public void run() { connect(); } }); }
 
     @Override protected void onPause() {
         active = false;
@@ -546,6 +550,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         } finally {
             scanning = false;
         }
+        if (!active) return;                              // interrupted: keep the previous channel list
         java.util.Collections.sort(found, new java.util.Comparator<Ts.Channel>() {
             public int compare(Ts.Channel a, Ts.Channel b) { return a.major != b.major ? a.major - b.major : a.minor - b.minor; }
         });

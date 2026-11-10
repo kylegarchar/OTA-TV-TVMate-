@@ -97,7 +97,7 @@ static uint16_t csum16(const uint8_t *b, int n)
 static int cmd(hdtvmate *d, uint16_t code, const uint8_t *pl, int plen, uint8_t *out, int olen)
 {
 	uint8_t b[512];
-	int act, r;
+	int act, r, i;
 	uint16_t c;
 
 	if (plen > 250)
@@ -114,9 +114,13 @@ static int cmd(hdtvmate *d, uint16_t code, const uint8_t *pl, int plen, uint8_t 
 	r = libusb_bulk_transfer(d->h, EP_CMD_OUT, b, plen + 6, &act, 3000);
 	if (r)
 		return E_USB;
-	r = libusb_bulk_transfer(d->h, EP_CMD_IN, b, sizeof(b), &act, 3000);
-	if (r)
-		return E_USB;
+	for (i = 0; i < 4; i++) {		/* skip stale replies to earlier commands */
+		r = libusb_bulk_transfer(d->h, EP_CMD_IN, b, sizeof(b), &act, 3000);
+		if (r)
+			return E_USB;
+		if (act >= 5 && b[1] == d->seqno)
+			break;
+	}
 	if (act < 5 || b[1] != d->seqno || csum16(b + 1, act - 3) != (b[act - 2] << 8 | b[act - 1]))
 		return E_PROTO;
 	if (b[2])
@@ -264,7 +268,7 @@ int hdtvmate_open(hdtvmate **out, const char *blob, int android_fd)
 	if (r)
 		goto fail;
 	if (android_fd >= 0) {
-#ifdef LIBUSB_OPTION_NO_DEVICE_DISCOVERY
+#if defined(LIBUSB_API_VERSION) && LIBUSB_API_VERSION >= 0x01000108
 		libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
 #endif
 	}

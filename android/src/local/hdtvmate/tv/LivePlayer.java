@@ -35,6 +35,7 @@ public final class LivePlayer {
     private final int program;
     private final long startNs = System.nanoTime();
     private volatile boolean released;
+    private boolean videoFailed, audioFailed;   // don't retry codec creation on every PES
 
     // demux
     private final Ts.Sections sections;
@@ -58,7 +59,7 @@ public final class LivePlayer {
     private final Map<Long, Long> aArrival = new java.util.LinkedHashMap<Long, Long>() {
         protected boolean removeEldestEntry(Map.Entry<Long, Long> e) { return size() > 200; }
     };
-    private static final long MAX_AUDIO_AGE_NS = 200_000_000L;   // keep audio within 0.2 s of arrival (live edge)
+    private static final long MAX_AUDIO_AGE_NS = 300_000_000L;   // keep audio within 0.3 s of arrival (live edge)
     private final AudioTimestamp ts = new AudioTimestamp();
     // video wall clock when there is no audio yet
     private long vAnchorUs = -1, vAnchorNs;
@@ -155,11 +156,11 @@ public final class LivePlayer {
         u.ptsUs = (pts - ptsBase) * 100 / 9;
         u.arrivalNs = pes.arrivalNs;
         if (isVideo) {
-            if (video == null && !startVideo(u.data)) return;     // wait for a sequence header / SPS
+            if (video == null && (videoFailed || !startVideo(u.data))) return;     // wait for a sequence header / SPS
             synchronized (vQueue) { vQueue.add(u); }
             pumpVideo();
         } else {
-            if (audio == null && !startAudio(u.data)) return;
+            if (audio == null && (audioFailed || !startAudio(u.data))) return;
             synchronized (aQueue) { aQueue.add(u); if (aQueue.size() > 50) aQueue.poll(); }
             pumpAudio();
         }
@@ -185,10 +186,11 @@ public final class LivePlayer {
             f.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 << 20);
             f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             f.setInteger(MediaFormat.KEY_PRIORITY, 0);              // realtime
+            MediaCodec vc = MediaCodec.createDecoderByType(videoMime);
             vThread = new HandlerThread("hdtvmate-video", android.os.Process.THREAD_PRIORITY_DISPLAY);
             vThread.start();
             final Handler vh = new Handler(vThread.getLooper());
-            video = MediaCodec.createDecoderByType(videoMime);
+            video = vc;
             video.setCallback(new MediaCodec.Callback() {
                 public void onInputBufferAvailable(MediaCodec c, int i) { synchronized (vQueue) { vFree.add(i); } pumpVideo(); }
                 public void onOutputBufferAvailable(MediaCodec c, int i, MediaCodec.BufferInfo info) { renderVideo(c, i, info, vh); }
@@ -206,6 +208,9 @@ public final class LivePlayer {
             return true;
         } catch (Exception e) {
             Log.e(TAG, "start video", e);
+            videoFailed = true;
+            if (video != null) { video.release(); video = null; }
+            if (vThread != null) { vThread.quitSafely(); vThread = null; }
             return false;
         }
     }
@@ -284,9 +289,10 @@ public final class LivePlayer {
         sampleRate = fscod == 1 ? 44100 : fscod == 2 ? 32000 : 48000;
         try {
             MediaFormat f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AC3, sampleRate, 2);
+            MediaCodec ac = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AC3);
             aThread = new HandlerThread("hdtvmate-audio", android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
             aThread.start();
-            audio = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AC3);
+            audio = ac;
             audio.setCallback(new MediaCodec.Callback() {
                 public void onInputBufferAvailable(MediaCodec c, int i) { synchronized (aQueue) { aFree.add(i); } pumpAudio(); }
                 public void onOutputBufferAvailable(MediaCodec c, int i, MediaCodec.BufferInfo info) { playAudio(c, i, info); }
@@ -303,6 +309,9 @@ public final class LivePlayer {
             return true;
         } catch (Exception e) {
             Log.e(TAG, "start audio", e);
+            audioFailed = true;
+            if (audio != null) { audio.release(); audio = null; }
+            if (aThread != null) { aThread.quitSafely(); aThread = null; }
             return false;
         }
     }
@@ -333,7 +342,7 @@ public final class LivePlayer {
                         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
                 .setAudioFormat(new AudioFormat.Builder().setSampleRate(sampleRate).setChannelMask(mask)
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                .setBufferSizeInBytes(min)
+                .setBufferSizeInBytes(min * 2)
                 .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .setTransferMode(AudioTrack.MODE_STREAM).build();
         audioFirstUs = -1;
