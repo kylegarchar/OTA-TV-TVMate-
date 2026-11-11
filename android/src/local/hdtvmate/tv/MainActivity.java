@@ -276,14 +276,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private void buildRows() {
         rows.removeAllViews();
         rowViews.clear();
-        final View toggle = addRow(hdOnly ? "HD" : "All", "HD Channels Only", hdOnly ? "On" : "Off", hdOnly, true,
-                new View.OnClickListener() { public void onClick(View v) {
-                    hdOnly = !hdOnly;
-                    getPrefs().edit().putBoolean("hdOnly", hdOnly).apply();
-                    applyFilter();
-                    buildRows();
-                    ui.post(new Runnable() { public void run() { ((android.view.ViewGroup) rows.getChildAt(0)).getChildAt(0).requestFocus(); } });
-                } });
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
             Ts.Channel c = channels.get(i);
@@ -456,7 +448,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     }
                     tuner = new Tuner(usb, dev, new Tuner.Blob(blob));
                 }
-                if (allChannels.isEmpty() || !getPrefs().getBoolean("resScan", false)) scanNow();   // one rescan to learn resolutions
+                if (allChannels.isEmpty() || !getPrefs().getBoolean("hdScan3", false)) scanNow();   // one rescan to learn resolutions
                 else {
                     int last = getPrefs().getInt("last", 0);
                     final int idx = last < channels.size() ? last : 0;
@@ -518,7 +510,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void loadChannels() {
         allChannels.clear();
-        hdOnly = getPrefs().getBoolean("hdOnly", true);
+        hdOnly = true;                                    // SD channels are never shown
         try {
             JSONArray a = new JSONArray(getPrefs().getString("channels", "[]"));
             for (int i = 0; i < a.length(); i++) {
@@ -583,6 +575,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 final java.util.Map<Integer, Integer> pmtProg = new java.util.HashMap<>(), vidProg = new java.util.HashMap<>(),
                         progHeight = new java.util.HashMap<>();
                 final Ts.Sections[] secRef = new Ts.Sections[1];
+                final java.util.Set<Integer> avcPids = new java.util.HashSet<>();
                 final Ts.Sections sec = new Ts.Sections(new Ts.Sections.Handler() {
                     public void section(int pid, byte[] s, int len) {
                         if (pid == 0x1ffb) { if (here.isEmpty()) here.addAll(Ts.parseTvct(s, len, rfNo, khz)); }
@@ -593,7 +586,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                             int i = 12 + ((s[10] & 0x0f) << 8 | (s[11] & 0xff));
                             while (i + 5 <= len - 4) {
                                 int type = s[i] & 0xff, ep = (s[i + 1] & 0x1f) << 8 | (s[i + 2] & 0xff);
-                                if (type == 0x02 || type == 0x1b) vidProg.put(ep, pmtProg.get(pid));
+                                if (type == 0x02 || type == 0x1b) { vidProg.put(ep, pmtProg.get(pid)); if (type == 0x1b) avcPids.add(ep); }
                                 i += 5 + ((s[i + 3] & 0x0f) << 8 | (s[i + 4] & 0xff));
                             }
                         }
@@ -610,10 +603,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                                 if (sec.watching(pid)) { sec.packet(b, i); continue; }
                                 Integer prog = vidProg.get(pid);
                                 if (prog == null || progHeight.containsKey(prog)) continue;
-                                for (int k = i + 4; k + 8 < i + 188; k++)        // MPEG-2 sequence header -> height
-                                    if (b[k] == 0 && b[k + 1] == 0 && b[k + 2] == 1 && (b[k + 3] & 0xff) == 0xb3) {
-                                        progHeight.put(prog, (b[k + 5] & 0x0f) << 8 | (b[k + 6] & 0xff)); break;
+                                for (int k = i + 4; k + 8 < i + 188; k++) {      // sequence header (MPEG-2) / SPS (H.264) -> height
+                                    if (b[k] != 0 || b[k + 1] != 0 || b[k + 2] != 1) continue;
+                                    boolean avc = avcPids.contains(pid);
+                                    if (!avc && (b[k + 3] & 0xff) == 0xb3) { progHeight.put(prog, (b[k + 5] & 0x0f) << 8 | (b[k + 6] & 0xff)); break; }
+                                    if (avc && (b[k + 3] & 0x1f) == 7 && (b[k + 3] & 0x80) == 0) {
+                                        int h = Ts.avcHeight(b, k + 3, i + 188);
+                                        if (h > 0) progHeight.put(prog, h);
+                                        break;
                                     }
+                                }
                             }
                         }
                     }
@@ -628,8 +627,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 }
                 tuner.stopStream();
                 synchronized (here) {
-                    for (Ts.Channel c : here) { Integer h = progHeight.get(c.program); if (h != null) c.height = h; }
-                    found.addAll(here);
+                    for (Ts.Channel c : here) {
+                        Integer h = progHeight.get(c.program);
+                        if (h != null) c.height = h;
+                        if (c.height == 0 || c.height >= 720) found.add(c);   // HD only; unknown kept until played
+                    }
                 }
             }
         } finally {
@@ -640,7 +642,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             public int compare(Ts.Channel a, Ts.Channel b) { return a.major != b.major ? a.major - b.major : a.minor - b.minor; }
         });
         saveChannels(found);
-        getPrefs().edit().putBoolean("resScan", true).apply();
+        getPrefs().edit().putBoolean("hdScan3", true).apply();
         for (Ts.Channel c : found) Log.i(TAG, "scan: " + c.major + "." + c.minor + " " + c.name + " RF" + c.rf + " prog " + c.program + " h=" + c.height);
         ui.post(new Runnable() { public void run() {
             loadChannels();
@@ -658,7 +660,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 ui.post(new Runnable() { public void run() {
                     if (token != playToken) return;
                     fitVideo(w, h);
-                    if (h > 0 && c.height != h && c.rf > 0) { c.height = h; persistChannels(); }
+                    if (h > 0 && c.height != h && c.rf > 0) {
+                        c.height = h;
+                        if (h < 720) allChannels.remove(c);        // turned out SD: drop it from the list
+                        persistChannels();
+                        applyFilter();
+                    }
                     // enhanced: the app draws at source resolution and the compositor scales it to the screen
                     if (enhanced && w > 0 && h > 0) surface.getHolder().setFixedSize(w, h);
                     else surface.getHolder().setSizeFromLayout();
