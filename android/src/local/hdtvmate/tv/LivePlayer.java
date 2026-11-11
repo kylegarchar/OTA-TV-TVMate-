@@ -258,7 +258,10 @@ public final class LivePlayer {
             srcW = w; srcH = h;
             float shown = interlaced ? fps * 2 : fps;   // 1080i is shown as 59.94 pictures a second
             if (shown > 0) frameNs = (long) (1e9 / shown);
-            if (picture != Enhancer.DIRECT) startEnhancer(w, h);
+            // 1080i: the GPU modes can only clean combing from one field (30 pictures/s, half detail in motion);
+            // the display hardware's motion-adaptive deinterlacer is far better, so interlaced video always goes direct.
+            if (interlaced && picture != Enhancer.DIRECT) Log.i(TAG, "interlaced: using the hardware deinterlacer (Direct)");
+            if (picture != Enhancer.DIRECT && !interlaced) startEnhancer(w, h);
             video = vc;
             video.setCallback(new MediaCodec.Callback() {
                 public void onInputBufferAvailable(MediaCodec c, int i) { synchronized (vQueue) { vFree.add(i); } pumpVideo(); }

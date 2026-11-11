@@ -82,7 +82,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private final List<Ts.Channel> channels = new ArrayList<>();     // what the list and CH +/- show
     private boolean hdOnly;
     private int current = -1, playToken;
-    private int picture;                              // Enhancer.DIRECT / CLEAN / SHARP / CLEAN_SHARP
+    private int picture;
+    private View pictureRow;                              // Enhancer.DIRECT / CLEAN / SHARP / CLEAN_SHARP
     private boolean enhancedNow;                      // the playing channel is being drawn by the Enhancer
     private volatile boolean scanning, active;
     private volatile Socket devSocket;
@@ -252,7 +253,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             miniTile.removeAllViews();
             View t = Ui.tile(MainActivity.this, c.major + "." + c.minor, 72, true);
             miniTile.addView(t, new FrameLayout.LayoutParams(-1, -1));
-            miniTitle.setText(c.name);
+            miniTitle.setText(displayName(c));
             miniSub.setText(sub);
             miniClock.setText(new SimpleDateFormat("h:mm", Locale.US).format(new Date()));
             miniBars.setStrength(strength);
@@ -276,14 +277,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private void buildRows() {
         rows.removeAllViews();
         rowViews.clear();
+        pictureRow = addRow("Pic", "Picture", Enhancer.NAMES[picture], false, true,
+                new View.OnClickListener() { public void onClick(View v) { nextPicture(); } });
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
             Ts.Channel c = channels.get(i);
-            rowViews.add(addRow(c.major + "." + c.minor, c.name, "RF " + c.rf, i == current, true,
+            rowViews.add(addRow(c.major + "." + c.minor, displayName(c), "RF " + c.rf, i == current, true,
                     new View.OnClickListener() { public void onClick(View v) { closePanel(); play(idx); } }));
         }
-        rowViews.add(addRow("Pic", "Picture", Enhancer.NAMES[picture], false, true,
-                new View.OnClickListener() { public void onClick(View v) { nextPicture(); } }));
         rowViews.add(addRow("↻", "Scan for Channels", null, false, false,
                 new View.OnClickListener() { public void onClick(View v) { closePanel(); startScan(); } }));
         panelCount.setText(channels.isEmpty() ? "No channels yet" : channels.size() + " channels");
@@ -337,7 +338,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         picture = (picture + 1) % Enhancer.NAMES.length;
         getPrefs().edit().putInt("picture", picture).apply();
         buildRows();
-        final View row = rowViews.get(channels.size());
+        final View row = pictureRow;
         ui.post(new Runnable() { public void run() { row.requestFocus(); } });
         if (current >= 0 && current < channels.size() && tuner != null) play(current);
     }
@@ -354,7 +355,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         leftScrim.setAlpha(0f);
         leftScrim.setVisibility(View.VISIBLE);
         leftScrim.animate().alpha(1f).setDuration(280).start();
-        final View target = rowViews.get(current >= 0 && current < channels.size() ? current : 0);
+        final View target = rowViews.isEmpty() ? pictureRow : rowViews.get(current >= 0 && current < channels.size() ? current : 0);
         ui.post(new Runnable() { public void run() {
             target.requestFocus();
             View item = (View) target.getParent();
@@ -529,9 +530,30 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private void applyFilter() {
         Ts.Channel cur = current >= 0 && current < channels.size() ? channels.get(current) : null;
         channels.clear();
-        for (Ts.Channel c : allChannels) if (!hdOnly || c.height == 0 || c.height >= 720) channels.add(c);
+        for (Ts.Channel c : allChannels)
+            if ((!hdOnly || c.height == 0 || c.height >= 720) && isMajorNetwork(c)) channels.add(c);
         current = cur == null ? -1 : channels.indexOf(cur);
     }
+
+    /** Major networks only: each station's main (x.1) channel whose name carries a network or a known affiliate call sign. */
+    /** Major networks only: each station's main (x.1) channel, shown by network name. */
+    private static final String[][] NETWORKS = {{"CBS", "CBS"}, {"NBC", "NBC"}, {"ABC", "ABC"}, {"FOX", "FOX"},
+            {"PBS", "PBS"}, {"CW", "CW"}, {"UNIVISION", "Univision"}, {"TELEMUNDO", "Telemundo"}};
+    private static final String[][] AFFILIATES = {{"WBBM", "CBS"}, {"WMAQ", "NBC"}, {"WLS", "ABC"}, {"WFLD", "FOX"},
+            {"WTTW", "PBS"}, {"WGN", "CW"}, {"WGBO", "Univision"}, {"WSNS", "Telemundo"}};   // Chicago call signs
+
+    /** Network name for a major-network main channel, or null. */
+    static String network(Ts.Channel c) {
+        if (c.minor != 1) return null;
+        String n = c.name.toUpperCase(java.util.Locale.US);
+        for (String[] a : AFFILIATES) if (n.startsWith(a[0])) return a[1];
+        for (String[] k : NETWORKS) if (n.matches(".*(^|[^A-Z])" + k[0] + "([^A-Z]|$).*") || n.startsWith(k[0])) return k[1];
+        return null;
+    }
+
+    static boolean isMajorNetwork(Ts.Channel c) { return network(c) != null; }
+
+    static String displayName(Ts.Channel c) { String n = network(c); return n != null ? n : c.name; }
 
     private void persistChannels() {
         int last = getPrefs().getInt("last", 0);
