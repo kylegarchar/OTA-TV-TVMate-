@@ -253,7 +253,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             miniTile.removeAllViews();
             View t = Ui.tile(MainActivity.this, c.major + "." + c.minor, 72, true);
             miniTile.addView(t, new FrameLayout.LayoutParams(-1, -1));
-            miniTitle.setText(c.name);
+            miniTitle.setText(displayName(c));
             miniSub.setText(sub);
             miniClock.setText(new SimpleDateFormat("h:mm", Locale.US).format(new Date()));
             miniBars.setStrength(strength);
@@ -282,7 +282,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
             Ts.Channel c = channels.get(i);
-            rowViews.add(addRow(c.major + "." + c.minor, c.name, "RF " + c.rf, i == current, true,
+            rowViews.add(addRow(c.major + "." + c.minor, displayName(c), "RF " + c.rf, i == current, true,
                     new View.OnClickListener() { public void onClick(View v) { closePanel(); play(idx); } }));
         }
         rowViews.add(addRow("↻", "Scan for Channels", null, false, false,
@@ -536,16 +536,24 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     /** Major networks only: each station's main (x.1) channel whose name carries a network or a known affiliate call sign. */
-    private static final String[] NETWORKS = {"CBS", "NBC", "ABC", "FOX", "PBS", "CW", "UNIVISION", "TELEMUNDO"};
-    private static final String[] AFFILIATES = {"WLS", "WFLD", "WTTW", "WGN", "WBBM", "WMAQ", "WGBO", "WSNS"};  // Chicago ABC, FOX, PBS, CW, CBS, NBC, Univision, Telemundo
+    /** Major networks only: each station's main (x.1) channel, shown by network name. */
+    private static final String[][] NETWORKS = {{"CBS", "CBS"}, {"NBC", "NBC"}, {"ABC", "ABC"}, {"FOX", "FOX"},
+            {"PBS", "PBS"}, {"CW", "CW"}, {"UNIVISION", "Univision"}, {"TELEMUNDO", "Telemundo"}};
+    private static final String[][] AFFILIATES = {{"WBBM", "CBS"}, {"WMAQ", "NBC"}, {"WLS", "ABC"}, {"WFLD", "FOX"},
+            {"WTTW", "PBS"}, {"WGN", "CW"}, {"WGBO", "Univision"}, {"WSNS", "Telemundo"}};   // Chicago call signs
 
-    static boolean isMajorNetwork(Ts.Channel c) {
-        if (c.minor != 1) return false;
+    /** Network name for a major-network main channel, or null. */
+    static String network(Ts.Channel c) {
+        if (c.minor != 1) return null;
         String n = c.name.toUpperCase(java.util.Locale.US);
-        for (String k : NETWORKS) if (n.matches(".*(^|[^A-Z])" + k + "([^A-Z]|$).*") || n.startsWith(k)) return true;
-        for (String k : AFFILIATES) if (n.startsWith(k)) return true;
-        return false;
+        for (String[] a : AFFILIATES) if (n.startsWith(a[0])) return a[1];
+        for (String[] k : NETWORKS) if (n.matches(".*(^|[^A-Z])" + k[0] + "([^A-Z]|$).*") || n.startsWith(k[0])) return k[1];
+        return null;
     }
+
+    static boolean isMajorNetwork(Ts.Channel c) { return network(c) != null; }
+
+    static String displayName(Ts.Channel c) { String n = network(c); return n != null ? n : c.name; }
 
     private void persistChannels() {
         int last = getPrefs().getInt("last", 0);
