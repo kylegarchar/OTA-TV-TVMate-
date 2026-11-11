@@ -194,4 +194,37 @@ public final class Ts {
             return o;
         }
     }
+
+    /** Height in lines from an H.264 SPS starting at b[off] (NAL header byte), or 0 if it can't be read. */
+    public static int avcHeight(byte[] b, int off, int end) {
+        byte[] r = new byte[end - off]; int n = 0;                     // strip emulation-prevention bytes
+        for (int i = off + 1; i < end; i++) {
+            if (i >= off + 3 && b[i] == 3 && b[i - 1] == 0 && b[i - 2] == 0) continue;
+            r[n++] = b[i];
+        }
+        int[] pos = {0};
+        try {
+            int profile = bits(r, pos, 8); bits(r, pos, 16); ue(r, pos);
+            if (profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44
+                    || profile == 83 || profile == 86 || profile == 118 || profile == 128) {
+                if (ue(r, pos) == 3) bits(r, pos, 1);
+                ue(r, pos); ue(r, pos); bits(r, pos, 1);
+                if (bits(r, pos, 1) == 1) return 0;                        // scaling lists: give up
+            }
+            ue(r, pos);
+            int poc = ue(r, pos);
+            if (poc == 0) ue(r, pos);
+            else if (poc == 1) { bits(r, pos, 1); se(r, pos); se(r, pos); int k = ue(r, pos); for (int j = 0; j < k; j++) se(r, pos); }
+            ue(r, pos); bits(r, pos, 1); ue(r, pos);
+            int hMap = ue(r, pos), frameOnly = bits(r, pos, 1);
+            return (2 - frameOnly) * (hMap + 1) * 16;
+        } catch (RuntimeException e) { return 0; }
+    }
+    private static int bits(byte[] r, int[] p, int n) {
+        int v = 0;
+        for (int i = 0; i < n; i++, p[0]++) v = v << 1 | ((r[p[0] >> 3] >> (7 - (p[0] & 7))) & 1);
+        return v;
+    }
+    private static int ue(byte[] r, int[] p) { int z = 0; while (bits(r, p, 1) == 0) if (++z > 31) throw new RuntimeException(); return (1 << z) - 1 + bits(r, p, z); }
+    private static int se(byte[] r, int[] p) { int v = ue(r, p); return (v & 1) != 0 ? (v + 1) / 2 : -(v / 2); }
 }
