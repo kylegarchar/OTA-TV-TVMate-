@@ -536,8 +536,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     /** Major networks only: each station's main (x.1) channel whose name carries a network or a known affiliate call sign. */
-    private static final String[] NETWORKS = {"CBS", "NBC", "ABC", "FOX", "PBS", "CW", "UNIVISION"};
-    private static final String[] AFFILIATES = {"WLS", "WFLD", "WTTW", "WGN", "WBBM", "WMAQ", "WGBO"};  // Chicago ABC, FOX, PBS, CW, CBS, NBC, Univision
+    private static final String[] NETWORKS = {"CBS", "NBC", "ABC", "FOX", "PBS", "CW", "UNIVISION", "TELEMUNDO"};
+    private static final String[] AFFILIATES = {"WLS", "WFLD", "WTTW", "WGN", "WBBM", "WMAQ", "WGBO", "WSNS"};  // Chicago ABC, FOX, PBS, CW, CBS, NBC, Univision, Telemundo
 
     static boolean isMajorNetwork(Ts.Channel c) {
         if (c.minor != 1) return false;
